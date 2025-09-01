@@ -22,7 +22,7 @@ partial class UpdaterWindow : TEKWindow
 	/// <summary>Steam client task thread.</summary>
 	Thread _taskThread;
 	/// <summary>Indicates whether validation should be preferred over update.</summary>
-	readonly bool _validate;
+	bool _validate;
 	/// <summary>The last status that DLC/mod had before creating the window.</summary>
 	readonly int _lastStatus;
 	/// <summary>Initializes a new Updater window for specified item.</summary>
@@ -132,6 +132,7 @@ partial class UpdaterWindow : TEKWindow
 		else
 		{
 			TaskbarItemInfo.ProgressState = TaskbarItemProgressState.Normal;
+			_currentStage = null;
 			Stages.Children.Clear();
 			_taskThread = new(TaskProcedure);
 			PauseRetryButton.Content = LocManager.GetString(LocCode.Pause);
@@ -246,6 +247,7 @@ partial class UpdaterWindow : TEKWindow
 				{
 					Title = string.Format(LocManager.GetString(LocCode.SteamUpdater), $"{details.Name} [{_newStatus + 1}/{array.Length}]");
 					TaskbarItemInfo.ProgressState = TaskbarItemProgressState.Normal;
+					_currentStage = null;
 					Stages.Children.Clear();
 				});
 				itemId.WorkshopItemId = details.Id;
@@ -286,9 +288,9 @@ partial class UpdaterWindow : TEKWindow
 		else
 		{
 			var itemId = new TEKSteamClient.ItemId { AppId = 346110, DepotId = depotId, WorkshopItemId = Item is Mod.ModDetails details ? details.Id : 0 };
-			res = TEKSteamClient.AppMng!.RunJob(in itemId, Settings.PreAquatica ? depotId switch
+			ulong preAquaticaId = depotId switch
 			{
-				346114 => 1166700156785110720,
+				346114 => 5573587184752106093,
 				375351 => 8265777340034981821,
 				375354 => 7952753366101555648,
 				375357 => 1447242805278740772,
@@ -299,10 +301,11 @@ partial class UpdaterWindow : TEKWindow
 				1691801 => 3147973472387347535,
 				1887561 => 580528532335699271,
 				_ => 0
-			} : 0ul, _validate, UpdHandler, out _desc);
+			};
+			res = TEKSteamClient.AppMng!.RunJob(in itemId, Settings.PreAquatica ? preAquaticaId : 0, _validate, UpdHandler, out _desc);
 			if (res.Success || res.Primary == 82)
 			{
-				_newStatus = depotId == 346110 ? (int)Mod.Status.Installed : (int)DLC.Status.Installed;
+				_newStatus = depotId == 346110 ? (int)Mod.Status.Installed : (Settings.PreAquatica ? (_desc->CurrentManifestId == preAquaticaId ? (int)DLC.Status.Installed : (int)DLC.Status.UpdateAvailable) : (int)DLC.Status.Installed);
 				Dispatcher.Invoke(delegate
 				{
 					ProgressBar.Reset(Controls.ProgressBar.Mode.Done);
@@ -365,6 +368,24 @@ partial class UpdaterWindow : TEKWindow
 		}
 		else if (!res.Success && res.Primary != 82)
 		{
+			if (_desc->Job.Stage == TEKSteamClient.AmJobStage.Pathcing && res.Type == 3 && res.Primary == 6 && (res.Auxiliary == 2 || res.Auxiliary == 38))
+			{
+				if (res.Uri != 0)
+					Marshal.FreeHGlobal(res.Uri);
+				res = TEKSteamClient.AppMng!.CancelJob(ref Unsafe.AsRef<TEKSteamClient.AmItemDesc>(_desc));
+				if (res.Success)
+				{
+					Dispatcher.Invoke(delegate
+					{
+						ProgressBar.Reset(Controls.ProgressBar.Mode.Done);
+						_currentStage = null;
+						Stages.Children.Clear();
+					});
+					_validate = true;
+					TaskProcedure();
+					return;
+				}
+			}
 			Dispatcher.Invoke(delegate
 			{
 				ProgressBar.Reset(Controls.ProgressBar.Mode.Done);
